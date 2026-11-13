@@ -1,0 +1,13 @@
+{
+  "data": {
+    "launches": [
+      {
+        "mint": "7XQ1HsYxFEbcUnKC6TeWgsVEqLpuKzEvdccV585hqJue",
+        "creator": "4xU25ckRqi5aeRZsAvZotvBCRcyQH3rvdPN3x5pgmCFj",
+        "launchpad": "launchlab",
+        "mode": "standard"
+      }
+    ]
+  },
+  "meta": { "page": 1, "pageSize": 100 }
+}

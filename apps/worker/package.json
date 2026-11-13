@@ -1,0 +1,31 @@
+{
+  "name": "@liftoff/worker",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "build": "tsup",
+    "start": "node dist/index.js",
+    "indexer": "tsx src/indexer-main.ts",
+    "indexer:dev": "tsx watch src/indexer-main.ts",
+    "economic": "tsx src/economic-main.ts",
+    "reserve": "tsx src/economic-main.ts --only=reserve",
+    "reserve:sim": "tsx src/sim/reserve-sim.ts",
+    "monitor": "tsx src/monitor-main.ts",
+    "start:economic": "node dist/economic-main.js",
+    "start:indexer": "node dist/indexer-main.js",
+    "start:monitor": "node dist/monitor-main.js",
+    "lint": "eslint .",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@liftoff/db": "workspace:*",
+    "@liftoff/shared": "workspace:*",
+    "@liftoff/solana": "workspace:*",
+    "@solana/web3.js": "1.98.4",
+    "bullmq": "6.3.11",
+    "ioredis": "6.0.0"
+  }
+}

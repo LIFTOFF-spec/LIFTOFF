@@ -1,0 +1,725 @@
+// Schema database LIFTOFF (Tahap 3, docs/BUILD_PLAN.md).
+//
+// Aturan yang ditegakkan di DB (lihat migrasi SQL):
+//  - fee_ledger, burn_ledger, reserve_ledger, reserve_decisions, audit_events append-only:
+//    trigger menolak UPDATE, DELETE, dan TRUNCATE (Aturan #7). Koreksi = entri `correction`.
+//  - x_account_claims.xUserId unik HANYA untuk status `active` (partial unique index).
+//    ticker_claims TIDAK lagi unik (Spec §7: ticker berulang = indikator risiko, bukan blokir).
+//  - Semua nominal on-chain disimpan sebagai DECIMAL(40,0) dalam satuan terkecil (lamport,
+//    unit token mentah). Tidak ada float.
+
+generator client {
+  provider     = "prisma-client"
+  output       = "../src/generated/prisma"
+  moduleFormat = "esm"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum LaunchStatus {
+  validating
+  queued
+  submitting
+  confirming
+  live
+  failed
+  needs_reconciliation
+}
+
+enum ClaimStatus {
+  active
+  released
+}
+
+enum TxType {
+  create
+  trade
+  claim_fee
+  buyback
+  burn
+  add_liquidity
+  lock_lp
+  deposit_refund
+}
+
+enum ConfirmationStatus {
+  pending
+  processed
+  confirmed
+  finalized
+  failed
+}
+
+enum FeeEntryType {
+  received
+  allocated_buyback
+  allocated_reserve
+  allocated_treasury
+  correction
+}
+
+enum FeeSource {
+  /// Entri lama: platform fee LaunchLab (model sebelum Spec). Di model Spec platform fee milik StonkFun.
+  platform_vault
+  /// Referral/share fee (Tahap 5; dimatikan).
+  referral
+  /// Creator fee curve LaunchLab / pool CPMM ke master wallet → alokasi 80/20 (Spec §9–10).
+  creator_fee
+}
+
+enum RiskLevel {
+  low
+  medium
+  high
+}
+
+enum AppealStatus {
+  pending
+  approved
+  rejected
+  used
+}
+
+enum Attribution {
+  verified
+  estimated
+}
+
+enum BurnSource {
+  buyback
+}
+
+enum ReserveEntryType {
+  contribution
+  deployment
+  correction
+}
+
+/// Identitas utama = wallet (Sign-In With Solana, D9 revisi). Akun X opsional.
+model User {
+  id        String    @id @default(uuid(7)) @db.Uuid
+  /// Public key wallet (base58). Baris lama dari sebelum D9 revisi memakai `legacy:<id>`.
+  wallet    String    @unique
+  /// ID akun X tertaut (OAuth), opsional. Tautan dev memakai prefiks `dev:`.
+  xUserId   String?   @unique
+  xHandle   String?
+  xLinkedAt DateTime? @db.Timestamptz(3)
+  createdAt DateTime  @default(now()) @db.Timestamptz(3)
+
+  tokens  Token[]
+  appeals LaunchAppeal[]
+
+  @@map("users")
+}
+
+model Token {
+  id               String       @id @default(uuid(7)) @db.Uuid
+  name             String
+  ticker           String
+  tickerNormalized String
+  /// Null sampai launch `live` (P5: mint tidak dipublikasikan sebelum mendarat).
+  mint             String?      @unique
+  imageUrl         String?
+  /// Perceptual hash gambar (hex 64-bit), untuk deteksi gambar salinan.
+  imageHash        String?
+  description      String       @default("")
+  /// { website, telegram, x }
+  links            Json         @default("{}")
+  /// Bentuk pembanding nama (normalizeName) dan tautan (normalize*) untuk anti-copycat Spec §7.
+  nameNormalized     String     @default("")
+  xNormalized        String?
+  websiteNormalized  String?
+  telegramNormalized String?
+  /// Klasifikasi anti-copycat saat launch + alasannya (RiskReport).
+  riskLevel        RiskLevel    @default(low)
+  riskReport       Json         @default("{}")
+  quoteMint        String
+  /// Global config LaunchLab yang dipakai (satu quote mint bisa punya lebih dari satu config).
+  quoteConfigId    String
+  creatorUserId    String       @db.Uuid
+  launchStatus     LaunchStatus @default(validating)
+  graduatedAt      DateTime?    @db.Timestamptz(3)
+  createdAt        DateTime     @default(now()) @db.Timestamptz(3)
+  updatedAt        DateTime     @updatedAt @db.Timestamptz(3)
+
+  creator      User            @relation(fields: [creatorUserId], references: [id])
+  tickerClaims TickerClaim[]
+  xClaims      XAccountClaim[]
+  launchJob    LaunchJob?
+
+  @@index([tickerNormalized])
+  @@index([createdAt])
+  @@index([quoteMint])
+  @@index([nameNormalized])
+  @@index([xNormalized])
+  @@index([websiteNormalized])
+  @@index([telegramNormalized])
+  @@map("tokens")
+}
+
+/// Katalog quote mint di luar registri (pairs.ts), ditulis worker sesudah pair diverifikasi on-chain.
+model QuoteAsset {
+  mint      String   @id
+  symbol    String
+  name      String
+  decimals  Int
+  /// Target raise launch terakhir (mentah, string), dasar skala batas per quote.
+  raiseRaw  String?
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @db.Timestamptz(3)
+
+  @@map("quote_assets")
+}
+
+model TickerClaim {
+  id               String      @id @default(uuid(7)) @db.Uuid
+  /// Spec §7: tidak unik (ticker berulang = indikator risiko). Index parsial untuk status `active`.
+  tickerNormalized String
+  tokenId          String      @db.Uuid
+  status           ClaimStatus @default(active)
+  expiresAt        DateTime?   @db.Timestamptz(3)
+  createdAt        DateTime    @default(now()) @db.Timestamptz(3)
+
+  token Token @relation(fields: [tokenId], references: [id])
+
+  @@index([tokenId])
+  @@map("ticker_claims")
+}
+
+model XAccountClaim {
+  id        String      @id @default(uuid(7)) @db.Uuid
+  /// Unik untuk status `active` (partial unique index di migrasi): satu akun X = satu koin aktif.
+  xUserId   String
+  tokenId   String      @db.Uuid
+  status    ClaimStatus @default(active)
+  createdAt DateTime    @default(now()) @db.Timestamptz(3)
+
+  token Token @relation(fields: [tokenId], references: [id])
+
+  @@index([tokenId])
+  @@map("x_account_claims")
+}
+
+model LaunchJob {
+  id              String       @id @default(uuid(7)) @db.Uuid
+  tokenId         String       @unique @db.Uuid
+  userId          String       @db.Uuid
+  idempotencyKey  String       @unique
+  /// SHA-256 dari body request; key yang sama dengan body berbeda ditolak.
+  requestHash     String
+  status          LaunchStatus @default(queued)
+  attemptCount    Int          @default(0)
+  lastError       String?
+  bundleId        String?
+  /// [{ status, at }] — riwayat status untuk halaman /launch/:id.
+  timeline        Json         @default("[]")
+  /// Pubkey mint yang diturunkan signer untuk job ini (Tahap 4). RAHASIA sampai live (P5):
+  /// API tidak pernah mengembalikannya sebelum status `live`. Sama untuk semua pengiriman ulang.
+  mintAddress     String?      @unique
+  /// Pool LaunchLab (PDA dari mint + quote mint), terisi saat live.
+  poolAddress     String?
+  /// Signature transaksi create yang mendarat.
+  createSignature String?
+  /// Berapa kali transaksi create dibangun & ditandatangani (maks LAUNCH_ENGINE.maxSubmissions).
+  submissionCount Int          @default(0)
+  /// launchFingerprint() config StonkFun saat divalidasi (Spec §4). Worker menolak jika berubah.
+  configFingerprint String?
+  createdAt       DateTime     @default(now()) @db.Timestamptz(3)
+  updatedAt       DateTime     @updatedAt @db.Timestamptz(3)
+
+  token        Token          @relation(fields: [tokenId], references: [id])
+  transactions Transaction[]
+  deposit      LaunchDeposit?
+
+  @@index([userId, createdAt])
+  @@index([createdAt])
+  @@map("launch_jobs")
+}
+
+model Transaction {
+  signature            String             @id
+  jobId                String?            @db.Uuid
+  type                 TxType
+  confirmationStatus   ConfirmationStatus @default(pending)
+  slot                 BigInt?
+  errorCode            String?
+  /// Transaksi tidak bisa mendarat lagi setelah block height ini (blockhash kedaluwarsa).
+  lastValidBlockHeight BigInt?
+  /// Jalur pengiriman (`rpc` | `jito`), lihat LAUNCH_ENGINE.sendMode.
+  sendMode             String?
+  bundleId             String?
+  createdAt            DateTime           @default(now()) @db.Timestamptz(3)
+  updatedAt            DateTime           @updatedAt @db.Timestamptz(3)
+
+  job LaunchJob? @relation(fields: [jobId], references: [id])
+
+  @@index([jobId])
+  @@map("transactions")
+}
+
+enum DepositStatus {
+  received
+  refund_pending
+  refunded
+  kept
+}
+
+/// Deposit launch = biaya launch dibayar creator (LAUNCH_DEPOSIT_ENABLED, default aktif). Disimpan jika
+/// launch live (`kept`); dikembalikan hanya jika launch gagal permanen.
+model LaunchDeposit {
+  id               String        @id @default(uuid(7)) @db.Uuid
+  jobId            String        @unique @db.Uuid
+  /// Transaksi transfer pengguna → master wallet. Satu signature hanya untuk satu launch.
+  depositSignature String        @unique
+  payer            String
+  lamports         Decimal       @db.Decimal(40, 0)
+  status           DepositStatus @default(received)
+  refundSignature  String?       @unique
+  createdAt        DateTime      @default(now()) @db.Timestamptz(3)
+  updatedAt        DateTime      @updatedAt @db.Timestamptz(3)
+
+  job LaunchJob @relation(fields: [jobId], references: [id])
+
+  @@map("launch_deposits")
+}
+
+/// Pengeluaran SOL master wallet per transaksi yang ditandatangani signer (dasar batas harian).
+model SignerSpend {
+  id        String   @id @default(uuid(7)) @db.Uuid
+  purpose   String
+  jobId     String?  @db.Uuid
+  /// Baris economic_ops (Tahap 7–8). Bersama purpose/jobId: kunci "satu transaksi hidup per operasi".
+  opId      String?  @db.Uuid
+  signature String   @unique
+  /// recentBlockhash transaksi yang ditandatangani (Tahap 9): tanda tangan ulang untuk operasi yang
+  /// sama hanya setelah blockhash ini kedaluwarsa dan signature-nya tidak pernah mendarat.
+  blockhash String?
+  lamports  Decimal  @db.Decimal(40, 0)
+  /// F3 (Tahap 10): keluaran aset dari akun token milik master per mint, diukur simulasi
+  /// ({ mint: "raw" }). Batas absolut per aset per 24 jam dihitung dari kolom ini.
+  assets    Json     @default("{}")
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+
+  @@index([createdAt])
+  @@index([purpose, jobId])
+  @@index([opId])
+  @@map("signer_spends")
+}
+
+/// Flag operasional global, mis. `signer.paused` (emergency pause). Perubahan dicatat di audit_events.
+model SystemFlag {
+  key       String   @id
+  value     Json
+  updatedBy String
+  updatedAt DateTime @updatedAt @db.Timestamptz(3)
+
+  @@map("system_flags")
+}
+
+/// Append-only (trigger). Koreksi lewat entryType `correction`.
+model FeeLedger {
+  id               String       @id @default(uuid(7)) @db.Uuid
+  sourceSignature  String
+  tokenMint        String
+  /// Satuan terkecil asset (mis. lamport). Boleh negatif hanya untuk `correction`.
+  amount           Decimal      @db.Decimal(40, 0)
+  assetMint        String
+  entryType        FeeEntryType
+  /// Asal dana. Entri `received` unik per (sourceSignature, source) — partial unique index di migrasi.
+  source           FeeSource    @default(platform_vault)
+  attribution      Attribution
+  relatedSignature String?
+  /// Untuk `correction` (Tahap 7): bagian yang dikoreksi (received / buyback / reserve).
+  bucket           FeeBucket?
+  /// Untuk `correction` dari rekonsiliasi: claim (economic_ops) asalnya.
+  claimOpId        String?      @db.Uuid
+  createdAt        DateTime     @default(now()) @db.Timestamptz(3)
+
+  claimItem FeeClaimItem?
+
+  @@index([tokenMint, createdAt])
+  @@index([sourceSignature])
+  @@index([claimOpId])
+  @@map("fee_ledger")
+}
+
+enum FeeBucket {
+  received
+  buyback
+  reserve
+}
+
+enum EconomicOpKind {
+  claim_curve
+  claim_cpmm
+  buyback
+  burn
+  /// Tahap 8: dana reserve dari ATA quote master ke akun kustodi token itu.
+  reserve_fund
+  /// Tahap 8: swap sebagian reserve → add-liquidity pool CPMM token itu → burn LP (atomik).
+  reserve_deploy
+  /// StonkFun: creator fee yang diteruskan otomatis ke master (diamati on-chain, tanpa tanda tangan).
+  fee_forward
+}
+
+enum EconomicOpStatus {
+  pending
+  signed
+  submitted
+  confirmed
+  failed
+  expired
+}
+
+/// Operasi economic engine (Tahap 7): claim creator fee, buyback, burn. Write-ahead: signature +
+/// transaksi bertanda tangan disimpan sebelum dikirim. Satu operasi aktif per (kind, target)
+/// (partial unique index); operasi `confirmed` final (trigger); tidak bisa dihapus.
+model EconomicOp {
+  id                   String           @id @default(uuid(7)) @db.Uuid
+  kind                 EconomicOpKind
+  status               EconomicOpStatus @default(pending)
+  idempotencyKey       String           @unique
+  /// Token tujuan (buyback/burn/claim CPMM). Null untuk claim vault curve (agregat per quote mint).
+  tokenMint            String?
+  /// Asset yang dibelanjakan/di-claim (quote mint; untuk burn = mint token).
+  assetMint            String
+  /// claim_curve: vault creator; claim_cpmm: pool; buyback: mint token; burn: ATA token master.
+  target               String
+  /// buyback: quote dibelanjakan (exact in); burn: token dibakar.
+  amountIn             Decimal?         @db.Decimal(40, 0)
+  minOut               Decimal?         @db.Decimal(40, 0)
+  /// Hasil terukur on-chain: buyback = token diterima; claim = quote diterima; burn = dibakar.
+  amountOut            Decimal?         @db.Decimal(40, 0)
+  /// burn → buyback asalnya.
+  parentOpId           String?          @db.Uuid
+  signature            String?          @unique
+  /// Transaksi bertanda tangan (base64) untuk kirim ulang setelah restart. Publik setelah dikirim.
+  signedTx             String?
+  lastValidBlockHeight BigInt?
+  slot                 BigInt?
+  attempts             Int              @default(0)
+  lastError            String?
+  details              Json             @default("{}")
+  createdAt            DateTime         @default(now()) @db.Timestamptz(3)
+  updatedAt            DateTime         @updatedAt @db.Timestamptz(3)
+  confirmedAt          DateTime?        @db.Timestamptz(3)
+
+  parent          EconomicOp?          @relation("OpParent", fields: [parentOpId], references: [id])
+  children        EconomicOp[]         @relation("OpParent")
+  claimItems      FeeClaimItem[]
+  reconciliations FeeReconciliation[]
+  reserveDeployment ReserveDeployment?
+
+  @@index([tokenMint, kind])
+  @@index([status])
+  @@map("economic_ops")
+}
+
+/// Append-only. Entri `received` creator fee yang tercakup claim tertentu (sekali per entri).
+model FeeClaimItem {
+  feeLedgerId String   @id @db.Uuid
+  claimOpId   String   @db.Uuid
+  createdAt   DateTime @default(now()) @db.Timestamptz(3)
+
+  feeLedger FeeLedger  @relation(fields: [feeLedgerId], references: [id])
+  claimOp   EconomicOp @relation(fields: [claimOpId], references: [id])
+
+  @@index([claimOpId])
+  @@map("fee_claim_items")
+}
+
+/// Append-only. Rekonsiliasi per (claim, asset): Δ di-claim vs alokasi ledger (Spec §13).
+model FeeReconciliation {
+  id              String      @id @default(uuid(7)) @db.Uuid
+  claimOpId       String      @db.Uuid
+  assetMint       String
+  claimedRaw      Decimal     @db.Decimal(40, 0)
+  ledgerRaw       Decimal     @db.Decimal(40, 0)
+  /// claimed − ledger. ≠ 0 → `estimated` + entri correction per token.
+  differenceRaw   Decimal     @db.Decimal(40, 0)
+  /// Surplus yang tidak bisa diatribusikan ke token mana pun (tidak dibelanjakan).
+  unattributedRaw Decimal     @default(0) @db.Decimal(40, 0)
+  status          Attribution
+  /// [{ tokenMint, ledgerRaw, correctionRaw }]
+  tokens          Json        @default("[]")
+  createdAt       DateTime    @default(now()) @db.Timestamptz(3)
+
+  claimOp EconomicOp @relation(fields: [claimOpId], references: [id])
+
+  @@unique([claimOpId, assetMint], map: "fee_reconciliations_once")
+  @@map("fee_reconciliations")
+}
+
+/// Status worker untuk alert & /api/health/economic (ditimpa tiap siklus, bukan ledger).
+model WorkerHeartbeat {
+  name                String    @id
+  lastRunAt           DateTime  @db.Timestamptz(3)
+  lastOkAt            DateTime? @db.Timestamptz(3)
+  consecutiveFailures Int       @default(0)
+  lastError           String?
+  details             Json      @default("{}")
+  /// Lease: proses yang sedang menjalankan siklus ini, sampai `leaseUntil`.
+  leaseOwner          String?
+  leaseUntil          DateTime? @db.Timestamptz(3)
+
+  @@map("worker_heartbeats")
+}
+
+/// Append-only (trigger).
+model BurnLedger {
+  id               String     @id @default(uuid(7)) @db.Uuid
+  tokenMint        String
+  /// Unit token mentah yang dibakar.
+  amountBurned     Decimal    @db.Decimal(40, 0)
+  /// Quote (satuan terkecil) yang dipakai untuk membeli.
+  amountSpent      Decimal    @db.Decimal(40, 0)
+  assetMint        String
+  source           BurnSource @default(buyback)
+  buybackSignature String
+  burnSignature    String     @unique
+  createdAt        DateTime   @default(now()) @db.Timestamptz(3)
+
+  @@index([tokenMint, createdAt])
+  @@map("burn_ledger")
+}
+
+/// Append-only (trigger).
+model ReserveLedger {
+  id          String           @id @default(uuid(7)) @db.Uuid
+  tokenMint   String
+  entryType   ReserveEntryType
+  amount      Decimal          @db.Decimal(40, 0)
+  assetMint   String
+  txSignature String
+  createdAt   DateTime         @default(now()) @db.Timestamptz(3)
+
+  @@index([tokenMint, createdAt])
+  @@map("reserve_ledger")
+}
+
+/// Override RESERVE_CONFIG per token (hanya boleh lebih ketat). Setiap perubahan dicatat di audit_events.
+model ReserveConfigOverride {
+  tokenMint String   @id
+  /// Subset ReserveConfig yang ditimpa, mis. { "cooldownSeconds": 43200 }.
+  params    Json     @default("{}")
+  paused    Boolean  @default(false)
+  updatedBy String
+  updatedAt DateTime @updatedAt @db.Timestamptz(3)
+
+  @@map("reserve_config_overrides")
+}
+
+/// Append-only (trigger). Hasil evaluateReserveDeployment per siklus (Tahap 8), termasuk penolakan;
+/// `inputSnapshot` = metrik liquidity monitoring (Spec §11 Phase 2).
+model ReserveDecision {
+  id            String   @id @default(uuid(7)) @db.Uuid
+  tokenMint     String
+  allowed       Boolean
+  amount        Decimal  @db.Decimal(40, 0)
+  reasons       String[]
+  inputSnapshot Json
+  createdAt     DateTime @default(now()) @db.Timestamptz(3)
+
+  @@index([tokenMint, createdAt])
+  @@map("reserve_decisions")
+}
+
+/// Append-only (trigger).
+model AuditEvent {
+  id          String   @id @default(uuid(7)) @db.Uuid
+  actor       String
+  action      String
+  result      String
+  requestId   String?
+  txSignature String?
+  details     Json?
+  createdAt   DateTime @default(now()) @db.Timestamptz(3)
+
+  @@index([action, createdAt])
+  @@map("audit_events")
+}
+
+/// Banding launch High-risk (Spec §7). Disetujui → launch dengan input identik boleh lewat sekali.
+model LaunchAppeal {
+  id          String       @id @default(uuid(7)) @db.Uuid
+  userId      String       @db.Uuid
+  status      AppealStatus @default(pending)
+  /// Input launch yang dibanding (LaunchInputParsed, tanpa pesan).
+  input       Json
+  /// SHA-256 input kanonik; launch hanya boleh memakai banding dengan hash yang sama.
+  inputHash   String
+  risk        Json
+  message     String
+  reviewNote  String?
+  reviewedBy  String?
+  reviewedAt  DateTime?    @db.Timestamptz(3)
+  usedByJobId String?      @unique @db.Uuid
+  createdAt   DateTime     @default(now()) @db.Timestamptz(3)
+  updatedAt   DateTime     @updatedAt @db.Timestamptz(3)
+
+  user User @relation(fields: [userId], references: [id])
+
+  @@index([status, createdAt])
+  @@index([userId, inputHash])
+  @@map("launch_appeals")
+}
+
+/// Receipt trade yang terbukti on-chain (event program). Dicatat oleh POST /api/trade/confirm
+/// (`recordedBy = api`) ATAU indexer (`indexer`, termasuk trade di luar UI LIFTOFF) — siapa pun
+/// yang lebih dulu; signature = PK, jadi tidak pernah dobel.
+model TradeReceipt {
+  signature      String    @id
+  tokenMint      String
+  wallet         String
+  side           String
+  route          String
+  quoteMint      String
+  amountToken    Decimal   @db.Decimal(40, 0)
+  amountQuote    Decimal   @db.Decimal(40, 0)
+  creatorFee     Decimal   @db.Decimal(40, 0)
+  creatorFeeMint String?
+  slot           BigInt
+  /// Harga spot sesudah trade (quote per token, unit tampilan) dari event trade itu.
+  priceQuote     Decimal?  @db.Decimal(65, 30)
+  /// Waktu blok on-chain (null jika RPC tidak memberikannya).
+  blockTime      DateTime? @db.Timestamptz(3)
+  recordedBy     String    @default("api")
+  createdAt      DateTime  @default(now()) @db.Timestamptz(3)
+
+  @@index([tokenMint, createdAt])
+  @@map("trade_receipts")
+}
+
+enum MarketRoute {
+  launchlab
+  migrating
+  cpmm
+}
+
+enum GraduationState {
+  not_graduated
+  migrating
+  pool_pending
+  verified
+  failed
+}
+
+/// Snapshot pasar per token dari indexer (Tahap 6). Ditimpa setiap siklus (bukan ledger).
+/// Nominal dalam satuan terkecil; harga = quote per 1 token (unit tampilan).
+model TokenMarket {
+  tokenMint         String      @id
+  route             MarketRoute
+  launchPool        String
+  cpmmPool          String?
+  /// Status pool LaunchLab on-chain: 0 trading, 1 menunggu migrasi, 2 sudah migrasi.
+  curveStatus       Int
+  priceQuote        Decimal?    @db.Decimal(65, 30)
+  /// Supply mint on-chain (sudah dikurangi burn).
+  supplyRaw         Decimal     @db.Decimal(40, 0)
+  /// Quote terkumpul di curve (realB) dan target graduation (totalFundRaisingB).
+  curveRaisedRaw    Decimal     @db.Decimal(40, 0)
+  curveTargetRaw    Decimal     @db.Decimal(40, 0)
+  /// Curve: quote di curve. CPMM: cadangan sisi quote pool.
+  liquidityQuoteRaw Decimal     @db.Decimal(40, 0)
+  holders           Int?
+  holdersAt         DateTime?   @db.Timestamptz(3)
+  indexedAt         DateTime    @db.Timestamptz(3)
+
+  @@map("token_markets")
+}
+
+/// Checkpoint indexer per alamat pool (curve atau CPMM): signature terakhir yang SELESAI diproses.
+model IndexerCheckpoint {
+  address       String   @id
+  tokenMint     String
+  /// `curve` | `cpmm`
+  kind          String
+  lastSignature String?
+  lastSlot      BigInt?
+  processed     Int      @default(0)
+  errorCount    Int      @default(0)
+  lastError     String?
+  updatedAt     DateTime @updatedAt @db.Timestamptz(3)
+
+  @@index([tokenMint])
+  @@map("indexer_checkpoints")
+}
+
+/// Hasil worker graduation (Spec §14): pool hasil migrasi, verifikasi config & LP, kesiapan
+/// add-liquidity. Reserve monitoring hanya aktif bila `reserveMonitoringActive`.
+model TokenGraduation {
+  tokenMint               String          @id
+  state                   GraduationState
+  launchPool              String
+  cpmmPool                String?
+  migrateSignature        String?
+  migratedAt              DateTime?       @db.Timestamptz(3)
+  lpMint                  String?
+  lpTotalRaw              Decimal?        @db.Decimal(40, 0)
+  lpBurnedRaw             Decimal?        @db.Decimal(40, 0)
+  lpLockedRaw             Decimal?        @db.Decimal(40, 0)
+  lpFreeRaw               Decimal?        @db.Decimal(40, 0)
+  addLiquiditySupported   Boolean         @default(false)
+  reserveMonitoringActive Boolean         @default(false)
+  /// [{ id, ok, detail }]
+  checks                  Json            @default("[]")
+  verifiedAt              DateTime?       @db.Timestamptz(3)
+  checkedAt               DateTime        @db.Timestamptz(3)
+
+  @@map("token_graduations")
+}
+/// Akun kustodi Conviction Reserve per token (Tahap 8, MVP Spec §13 "segregated custody"):
+/// akun token SPL createWithSeed(master, seed, Token Program) — alamat bisa diturunkan ulang siapa
+/// pun. Hanya signer allowlist `reserve_fund`/`reserve_deploy` yang boleh memakainya, dan hanya ke
+/// pool CPMM token yang sama.
+model ReserveVault {
+  tokenMint    String   @id
+  quoteMint    String
+  kind         String   @default("segregated_custody")
+  quoteAccount String   @unique
+  quoteSeed    String
+  tokenAccount String   @unique
+  tokenSeed    String
+  createdAt    DateTime @default(now()) @db.Timestamptz(3)
+
+  @@map("reserve_vaults")
+}
+
+/// Append-only (trigger). Bukti publik satu deployment reserve (Spec §11 Phase 5).
+model ReserveDeployment {
+  id                  String   @id @default(uuid(7)) @db.Uuid
+  opId                String   @unique @db.Uuid
+  tokenMint           String
+  quoteMint           String
+  pool                String
+  lpMint              String
+  vaultQuoteAccount   String
+  vaultTokenAccount   String
+  /// Saldo reserve (quote) token ini tepat sebelum deployment.
+  reserveBeforeRaw    Decimal  @db.Decimal(40, 0)
+  /// Quote yang keluar dari akun kustodi (swap + add-liquidity), terukur on-chain.
+  quoteDeployedRaw    Decimal  @db.Decimal(40, 0)
+  swapInRaw           Decimal  @db.Decimal(40, 0)
+  tokenBoughtRaw      Decimal  @db.Decimal(40, 0)
+  quoteAddedRaw       Decimal  @db.Decimal(40, 0)
+  tokenAddedRaw       Decimal  @db.Decimal(40, 0)
+  lpMintedRaw         Decimal  @db.Decimal(40, 0)
+  lpBurnedRaw         Decimal  @db.Decimal(40, 0)
+  /// `burn` = LP dibakar di transaksi yang sama (tidak bisa ditarik siapa pun).
+  lockMethod          String
+  lockVerified        Boolean
+  remainingReserveRaw Decimal  @db.Decimal(40, 0)
+  /// Sisa token hasil swap yang tidak terpakai add-liquidity (tetap di akun kustodi token ini).
+  tokenResidualRaw    Decimal  @db.Decimal(40, 0)
+  signature           String   @unique
+  slot                BigInt
+  decisionId          String?  @db.Uuid
+  createdAt           DateTime @default(now()) @db.Timestamptz(3)
+
+  op EconomicOp @relation(fields: [opId], references: [id])
+
+  @@index([tokenMint, createdAt])
+  @@map("reserve_deployments")
+}

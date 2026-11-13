@@ -1,0 +1,6 @@
+# Mode "direct" (default, mis. staging devnet sslip.io): browser langsung ke Caddy.
+# Tidak ada proxy yang dipercaya → IP klien = IP koneksi; header X-Forwarded-For / CF-Connecting-IP
+# dari luar diabaikan. Baris di bawah = nilai bawaan Caddy, ditulis agar file tidak kosong.
+servers {
+	protocols h1 h2 h3
+}

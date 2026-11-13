@@ -1,0 +1,60 @@
+# LIFTOFF reverse proxy (Tahap 10b, mode Cloudflare Tahap 11a). HTTPS otomatis (Let's Encrypt)
+# untuk {$DOMAIN}. Hanya web & API yang dipublikasikan; signer, database, dan redis tidak bisa
+# dijangkau Caddy.
+#
+# EDGE_MODE (deploy/.env):
+#   direct      (default) browser langsung ke server, mis. staging devnet sslip.io.
+#   cloudflare  domain di-proxy Cloudflare (awan oranye, SSL "Full (strict)"): IP pengunjung asli
+#               dibaca dari CF-Connecting-IP HANYA bila koneksi datang dari IP Cloudflare, dan
+#               koneksi dari luar Cloudflare ditutup. File edge/cloudflare-*.caddy dibuat oleh
+#               scripts/update-cloudflare-ips.sh. Sertifikat tetap dari Let's Encrypt lewat Caddy
+#               (tantangan HTTP-01 lewat Cloudflare di port 80), jadi tidak ada file sertifikat
+#               yang perlu disalin pemilik.
+{
+	email {$ACME_EMAIL}
+	# Header Server tidak dikirim; admin API Caddy hanya di dalam container (localhost:2019).
+	import edge/{$EDGE_MODE:direct}-global.caddy
+}
+
+{$DOMAIN} {
+	import edge/{$EDGE_MODE:direct}-site.caddy
+
+	encode zstd gzip
+
+	# Batas ukuran body (upload gambar maks 2 MB di API).
+	request_body {
+		max_size 5MB
+	}
+
+	header {
+		-Server
+	}
+
+	# /api/* langsung ke API (tanpa lewat Next). X-Forwarded-For DITIMPA dengan satu nilai: IP
+	# pengunjung asli ({client_ip}); nilai X-Forwarded-For kiriman pengunjung tidak diteruskan.
+	# API (TRUST_PROXY=1) hanya memercayai header ini dari Caddy (jaringan Docker privat).
+	handle /api/* {
+		reverse_proxy api:4000 {
+			header_up X-Forwarded-For {client_ip}
+			header_up -CF-Connecting-IP
+		}
+	}
+
+	handle {
+		reverse_proxy web:3000 {
+			header_up X-Forwarded-For {client_ip}
+			header_up -CF-Connecting-IP
+		}
+	}
+
+	log {
+		output stdout
+		format json
+	}
+}
+
+# www.{$DOMAIN} (hanya mode cloudflare): dialihkan ke domain utama.
+import edge/{$EDGE_MODE:direct}-www.caddy
+
+# Domain lama sesudah pindah domain (LEGACY_MODE=on + LEGACY_DOMAIN, docs/DEPLOY.md §12a).
+import edge/legacy-{$LEGACY_MODE:off}.caddy

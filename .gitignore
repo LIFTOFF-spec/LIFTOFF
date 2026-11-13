@@ -1,0 +1,57 @@
+# dependencies
+node_modules/
+.pnpm-store/
+
+# env & secrets (JANGAN commit)
+.env
+.env.*
+!.env.example
+!.env.production.example
+!.env.mainnet.example
+*.pem
+*.key
+**/keypair*.json
+**/*-keypair.json
+id.json
+
+# build output
+dist/
+build/
+out/
+.next/
+next-env.d.ts
+*.tsbuildinfo
+coverage/
+
+# tooling
+.turbo/
+.vercel/
+.eslintcache
+
+# logs
+*.log
+npm-debug.log*
+pnpm-debug.log*
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/*
+!.vscode/extensions.json
+
+# Aset & dokumen lokal yang tidak diunggah
+/Asset/
+/LIFTOFF_BUILD_PLAN.md
+
+# PoC Tahap 1: state lokal antar-script (alamat devnet, bukan secret)
+/scripts/poc/.state/
+
+# Prisma client hasil generate (Tahap 3)
+packages/db/src/generated/
+# Upload gambar lokal (development)
+.data/
+
+# Deploy (Tahap 10b): deploy/.env berisi secret (sudah tercakup .env di atas); log rilis lokal server
+deploy/releases.log
+deploy/backups/

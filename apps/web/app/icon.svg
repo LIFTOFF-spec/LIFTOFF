@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="130 90 320 320" role="img" aria-label="LIFTOFF">
+  <path id="leg" fill="#111111" d="M286 112 L286 228 C286 290 200 340 148 376 L140 320 C190 285 245 255 245 205 L245 145 C245 125 260 112 275 112 Z"/>
+  <use href="#leg" transform="matrix(-1 0 0 1 580 0)"/>
+  <path fill="#F5A21C" d="M290 262 Q298 317 355 325 Q298 333 290 390 Q282 333 225 325 Q282 317 290 262 Z"/>
+</svg>

@@ -1,0 +1,58 @@
+{
+  "data": {
+    "token": {
+      "mint": "ChWZ8yNvMh31yHtkZh3fSjWZaQiv62bHr1WPnUPLvuLF",
+      "pool": "EBA8nnnHuFRMHd3Ac9HMMCNTi52E3GXT7HDreXwvhnCu",
+      "name": "PunkDuck",
+      "symbol": "PNDC",
+      "quote": {
+        "mint": "So11111111111111111111111111111111111111112",
+        "symbol": "SOL",
+        "name": "Wrapped SOL",
+        "logoUrl": "/api/asset/quote-logo/So11111111111111111111111111111111111111112?v=2aa6de95",
+        "category": "solana",
+        "categoryLabel": "Solana"
+      },
+      "launchpad": "launchlab",
+      "mode": "standard",
+      "feeModel": "standard",
+      "quoteOnlyFees": true,
+      "imageUrl": "https://liftoff.sarl/api/uploads/38abf43eb8bb77ffc23f535747c28dd3.webp",
+      "links": {},
+      "market": {
+        "priceUsd": 0.0000025907755309700727,
+        "marketCapUsd": 2590.775530970073,
+        "fdvUsd": 2590.775530970073,
+        "volume24hUsd": 0,
+        "liquidityUsd": 1.8532596306102436e-7,
+        "priceChange24h": -0.8180446427124899,
+        "peakMarketCapUsd": 3094.0155314376684
+      },
+      "status": "new",
+      "graduationProgress": 2.3529411764705882e-11,
+      "createdAt": "2026-11-02T08:47:02.211Z"
+    },
+    "launch": {
+      "mint": "ChWZ8yNvMh31yHtkZh3fSjWZaQiv62bHr1WPnUPLvuLF",
+      "pool": "EBA8nnnHuFRMHd3Ac9HMMCNTi52E3GXT7HDreXwvhnCu",
+      "name": "PunkDuck",
+      "symbol": "PNDC",
+      "creator": "HxM1EeyZ9z71m8mu5x9bsUdtTP1f9qtT7mo9D5tB3xwM",
+      "quote": {
+        "mint": "So11111111111111111111111111111111111111112",
+        "symbol": "SOL"
+      },
+      "launchpad": "launchlab",
+      "mode": "standard",
+      "feeModel": "standard",
+      "logoUrl": "https://liftoff.sarl/api/uploads/38abf43eb8bb77ffc23f535747c28dd3.webp",
+      "startMarketCapUsd": 2648.2046055613705,
+      "targetMarketCapUsd": 2648.2046055613705,
+      "createdAt": "2026-11-02T08:44:22.147Z"
+    },
+    "network": "mainnet-beta"
+  },
+  "meta": {
+    "generatedAt": "2026-11-03T13:15:27.679Z"
+  }
+}

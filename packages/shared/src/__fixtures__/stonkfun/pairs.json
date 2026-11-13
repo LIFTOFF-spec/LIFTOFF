@@ -1,0 +1,33 @@
+{
+  "data": {
+    "pairs": [
+      {
+        "quoteMint": "So11111111111111111111111111111111111111112",
+        "symbol": "SOL",
+        "name": "Solana",
+        "category": "native",
+        "decimals": 9,
+        "launchable": true,
+        "launchLabReady": true
+      },
+      {
+        "quoteMint": "2XQn5WGHCJkKPjNnjcrYShbq8VpZ4e9u3DVrUgRxhngT",
+        "symbol": "SPYx",
+        "name": "SP500 xStock",
+        "category": "xstocks",
+        "decimals": 8,
+        "tokenProgram": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+        "launchable": true,
+        "launchLabReady": false
+      },
+      {
+        "quoteMint": "J9Ws7B3UctUgM5G3CqXm9Yqro8Kfq93rQ2hDWhqZRRqB",
+        "symbol": "OLD",
+        "category": "retired",
+        "decimals": 6,
+        "launchable": false
+      }
+    ]
+  },
+  "meta": { "count": 3 }
+}

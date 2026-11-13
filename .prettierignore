@@ -1,0 +1,12 @@
+node_modules
+dist
+.next
+.turbo
+coverage
+pnpm-lock.yaml
+LIFTOFF_BUILD_PLAN.md
+LIFTOFF_BUILD_PLAN_v2.md
+docs/BUILD_PLAN.md
+Asset
+docs/SPEC_LIFT.md
+packages/shared/src/__fixtures__/stonkfun/pricing-sol-mainnet-2026-10-31.json

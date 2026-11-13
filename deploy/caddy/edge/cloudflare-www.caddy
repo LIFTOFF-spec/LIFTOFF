@@ -1,0 +1,10 @@
+# Mode "cloudflare": record DNS www di-proxy Cloudflare (DEPLOY §12a), jadi Caddy harus punya
+# sertifikat untuk nama ini; tanpa blok ini Cloudflare menjawab error 525. Isinya hanya alihan.
+# Alihan di dalam handle supaya berjalan sesudah abort di cloudflare-site.caddy.
+www.{$DOMAIN} {
+	import cloudflare-site.caddy
+
+	handle {
+		redir https://{$DOMAIN}{uri} permanent
+	}
+}

@@ -1,0 +1,131 @@
+@import "tailwindcss";
+
+/*
+ * LIFTOFF design tokens (Tahap 2, revisi brand).
+ * Gaya: terang, krem/off-white, garis hitam tebal ala ilustrasi brand (Asset/).
+ * Merah-oranye = CTA & sorotan, biru kobalt = reserve/info, emas = bintang logo.
+ * Heading: Ultra (slab tebal) uppercase dengan titik di akhir. UI: Figtree. Data: Fira Code tabular.
+ */
+@theme {
+  /* permukaan — bg sama dengan latar ilustrasi supaya gambar menyatu */
+  --color-bg: #fdfcf2;
+  --color-surface: #ffffff;
+  --color-surface-2: #f4f1e4;
+  --color-line: #e5dfcc;
+  --color-line-strong: #cbc3ab;
+  --color-ink: #111111;
+
+  /* teks */
+  --color-text: #111111;
+  --color-text-muted: #545048;
+  --color-text-subtle: #767062;
+
+  /* brand */
+  --color-accent: #ff4a24;
+  --color-accent-ink: #111111;
+  --color-accent-strong: #c2300c;
+  --color-cobalt: #1446e6;
+  --color-gold: #f5a21c;
+
+  /* semantik */
+  --color-success: #15803d;
+  --color-danger: #b42318;
+  --color-warn: #9a5800;
+  --color-info: #1446e6;
+  --color-burn: #d9360f;
+  --color-reserve: #1446e6;
+  --color-mock: #8e24aa;
+
+  /* status stat (Aturan #4) */
+  --color-status-verified: #15803d;
+  --color-status-estimated: #9a5800;
+  --color-status-delayed: #1446e6;
+  --color-status-unavailable: #767062;
+
+  --font-sans: var(--font-figtree), ui-sans-serif, system-ui, "Segoe UI", Roboto, Arial, sans-serif;
+  --font-display: var(--font-ultra), "Rockwell", Georgia, serif;
+  --font-mono: var(--font-fira-code), ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+
+  --radius-card: 1rem;
+  --shadow-brutal: 4px 4px 0 0 #111111;
+  --shadow-brutal-sm: 2px 2px 0 0 #111111;
+}
+
+html {
+  color-scheme: light;
+}
+
+body {
+  background-color: var(--color-bg);
+  color: var(--color-text);
+  font-family: var(--font-sans);
+}
+
+::selection {
+  background-color: color-mix(in srgb, var(--color-accent) 30%, transparent);
+}
+
+:focus-visible {
+  outline: 2px solid var(--color-cobalt);
+  outline-offset: 2px;
+}
+
+/* Heading brand: Ultra (slab sangat tebal & lebar), uppercase. Hanya untuk judul besar,
+   jangan untuk label/teks kecil. Teksnya sendiri diakhiri titik. */
+.display {
+  font-family: var(--font-display);
+  font-weight: 400;
+  text-transform: uppercase;
+  line-height: 1.1;
+  letter-spacing: -0.015em;
+  overflow-wrap: anywhere;
+}
+
+.num {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Modal Wallet Adapter mengikuti tema terang. */
+.wallet-adapter-modal-wrapper {
+  background: var(--color-surface) !important;
+  color: var(--color-text) !important;
+  border: 2px solid var(--color-ink);
+  box-shadow: var(--shadow-brutal) !important;
+  font-family: var(--font-sans) !important;
+}
+.wallet-adapter-modal-title {
+  color: var(--color-text) !important;
+  font-size: 1.125rem !important;
+}
+.wallet-adapter-modal-button-close {
+  background: var(--color-surface-2) !important;
+}
+.wallet-adapter-modal-button-close svg {
+  fill: var(--color-text) !important;
+}
+.wallet-adapter-modal-list .wallet-adapter-button {
+  color: var(--color-text) !important;
+}
+.wallet-adapter-modal-list .wallet-adapter-button:not([disabled]):hover {
+  background-color: var(--color-surface-2) !important;
+}
+.wallet-adapter-modal-list-more {
+  color: var(--color-text-muted) !important;
+}
+.wallet-adapter-modal-list-more svg {
+  fill: var(--color-text-muted) !important;
+}
+.wallet-adapter-button {
+  font-family: var(--font-sans) !important;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}

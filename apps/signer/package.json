@@ -1,0 +1,31 @@
+{
+  "name": "@liftoff/signer",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "build": "tsup",
+    "start": "node dist/index.js",
+    "pause": "tsx src/cli.ts pause",
+    "resume": "tsx src/cli.ts resume",
+    "status": "tsx src/cli.ts status",
+    "platform-fee": "tsx src/platform-fee.ts",
+    "lint": "eslint .",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@liftoff/db": "workspace:*",
+    "@liftoff/shared": "workspace:*",
+    "@liftoff/solana": "workspace:*",
+    "@solana/web3.js": "1.98.4",
+    "fastify": "5.12.7",
+    "zod": "4.6.7"
+  },
+  "devDependencies": {
+    "@raydium-io/raydium-sdk-v2": "0.2.74-alpha",
+    "@types/bn.js": "5.2.0",
+    "bn.js": "5.2.2"
+  }
+}

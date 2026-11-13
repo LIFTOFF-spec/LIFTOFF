@@ -1,0 +1,3 @@
+# Mode "direct": tidak ada pembatasan asal koneksi di Caddy (firewall server tetap berlaku).
+# Baris di bawah tidak mengubah apa pun; hanya agar file tidak kosong.
+header -X-Powered-By

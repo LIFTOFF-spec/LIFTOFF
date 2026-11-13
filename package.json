@@ -1,0 +1,35 @@
+{
+  "name": "liftoff",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@12.15.0",
+  "engines": {
+    "node": ">=22.12.0"
+  },
+  "scripts": {
+    "dev": "turbo run dev",
+    "build": "turbo run build",
+    "lint": "turbo run lint",
+    "typecheck": "turbo run typecheck",
+    "test": "turbo run test",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "db:up": "docker compose up -d",
+    "db:down": "docker compose down",
+    "db:migrate": "pnpm --filter @liftoff/db migrate:deploy",
+    "db:seed": "pnpm --filter @liftoff/db seed"
+  },
+  "devDependencies": {
+    "@eslint/js": "9.39.5",
+    "@types/node": "26.6.5",
+    "eslint": "9.39.5",
+    "globals": "17.13.0",
+    "prettier": "3.9.10",
+    "tsup": "9.0.0",
+    "tsx": "4.23.15",
+    "turbo": "2.11.10",
+    "typescript": "6.0.3",
+    "typescript-eslint": "8.72.1",
+    "vitest": "5.0.5"
+  }
+}

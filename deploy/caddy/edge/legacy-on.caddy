@@ -1,0 +1,34 @@
+# LEGACY_MODE=on: domain lama sesudah pindah domain. Token yang sudah diluncurkan menyimpan alamat
+# metadata di domain lama secara on-chain, jadi metadata & gambar tetap dilayani langsung di sini.
+# Semua alamat lain dialihkan ke domain utama. Alihan di dalam handle supaya berjalan sesudah abort
+# di file *-site.caddy.
+{$LEGACY_DOMAIN}, www.{$LEGACY_DOMAIN} {
+	import {$EDGE_MODE:direct}-site.caddy
+
+	encode zstd gzip
+
+	header {
+		-Server
+	}
+
+	@token_assets {
+		method GET HEAD
+		path /api/metadata/* /api/uploads/*
+	}
+
+	handle @token_assets {
+		reverse_proxy api:4000 {
+			header_up X-Forwarded-For {client_ip}
+			header_up -CF-Connecting-IP
+		}
+	}
+
+	handle {
+		redir https://{$DOMAIN}{uri} permanent
+	}
+
+	log {
+		output stdout
+		format json
+	}
+}

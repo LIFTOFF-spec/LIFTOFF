@@ -1,0 +1,25 @@
+packages:
+  - "apps/*"
+  - "packages/*"
+
+# Dependensi yang diizinkan menjalankan install script.
+allowBuilds:
+  esbuild: true
+  unrs-resolver: true
+  # Prisma (Tahap 3): mengunduh schema engine untuk migrasi.
+  "@prisma/engines": true
+  prisma: true
+  # Addon native opsional dari @solana/web3.js (ada fallback JS murni); tidak perlu di-build.
+  bigint-buffer: false
+  # Addon native opsional untuk ws (dipakai @solana/web3.js); tidak diperlukan.
+  bufferutil: false
+  utf-8-validate: false
+  # Addon native opsional dari msgpackr (dipakai BullMQ); ada fallback JS murni.
+  msgpackr-extract: false
+
+minimumReleaseAgeExclude:
+  - "@fastify/cookie@11.1.5"
+
+# Tahap 9 (pnpm audit): bn.js < 5.2.3 punya bug infinite loop (GHSA moderate); 5.2.5 kompatibel.
+overrides:
+  "bn.js@<5.2.3": "5.2.5"

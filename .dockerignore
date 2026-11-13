@@ -1,0 +1,32 @@
+# Konteks build Docker (Tahap 10b). Secret, keypair, dan hasil build lokal TIDAK boleh ikut.
+.git
+.github
+.claude
+.turbo
+**/node_modules
+**/dist
+**/.next
+**/coverage
+**/*.tsbuildinfo
+**/next-env.d.ts
+packages/db/src/generated
+.data
+Asset
+scripts/poc/.state
+
+# env & secrets
+**/.env
+**/.env.*
+!.env.example
+!deploy/.env.production.example
+deploy/secrets
+**/*.pem
+**/*.key
+**/keypair*.json
+**/*-keypair.json
+**/id.json
+
+# dokumen besar yang tidak dibutuhkan build
+LIFTOFF_BUILD_PLAN*.md
+docs
+*.log

@@ -1,0 +1,435 @@
+# LIFTOFF — stack produksi satu server (Tahap 10b; target pertama: staging DEVNET di satu VPS Linux).
+# Panduan lengkap untuk pemilik: docs/DEPLOY.md. Ringkas (dari folder deploy/):
+#   sh scripts/generate-env.sh           # sekali: buat deploy/.env (password & token acak, gitignored)
+#   sh scripts/deploy.sh                 # build image + migrasi + jalankan semua
+#   docker compose -f docker-compose.prod.yml ps / logs -f api
+#
+# Nilai ${...} dibaca dari deploy/.env (otomatis oleh docker compose). Tiap service HANYA menerima
+# variabel yang ia butuhkan (contoh: web & Caddy tidak pernah melihat token signer / password DB).
+#
+# Jaringan:
+#   edge   : Caddy ↔ web ↔ api (satu-satunya yang punya port publik: Caddy 80/443)
+#   data   : postgres, redis + aplikasi yang memakainya (internal: tanpa akses internet)
+#   signer : signer + pemanggilnya (worker launch/economic, monitor, health API) (internal)
+#   egress : akses keluar ke RPC Solana untuk signer & worker
+# Signer TIDAK punya port di host dan tidak berada di jaringan Caddy/web.
+name: liftoff
+
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "5"
+
+# Pengaturan umum container aplikasi: restart otomatis, rotasi log, filesystem read-only,
+# tanpa kapabilitas Linux tambahan, tanpa eskalasi hak akses.
+x-app: &app
+  restart: unless-stopped
+  # Node sebagai PID 1 mengabaikan SIGTERM → stop/update menunggu 10 detik lalu dibunuh.
+  # init kecil (tini) meneruskan sinyal sehingga proses berhenti rapi.
+  init: true
+  logging: *logging
+  read_only: true
+  tmpfs:
+    - /tmp
+  cap_drop: [ALL]
+  security_opt:
+    - no-new-privileges:true
+
+# Konfigurasi Solana yang dibaca semua proses Node. Default DEVNET. Mainnet hanya menyala bila semua
+# syarat terisi di deploy/.env (kode menolak start bila kurang satu; docs/DEPLOY.md §12).
+x-solana-env: &solana-env
+  SOLANA_CLUSTER: ${SOLANA_CLUSTER:-devnet}
+  RPC_URL: ${RPC_URL:-https://api.devnet.solana.com}
+  RPC_BACKUP_URL: ${RPC_BACKUP_URL:-}
+  STONKFUN_MAINNET_ENABLED: ${STONKFUN_MAINNET_ENABLED:-0}
+  # Launch baru pair non-SOL. Tetap 0 sampai satu launch uji non-SOL dan fee-nya terbukti (BUILD_PLAN §7q).
+  PAIRS_NON_SOL_ENABLED: ${PAIRS_NON_SOL_ENABLED:-0}
+  LIFTOFF_MAINNET_APPROVED: ${LIFTOFF_MAINNET_APPROVED:-}
+  # Pubkey master wallet (bukan private key). Wajib di mainnet; diabaikan di devnet.
+  MASTER_WALLET_PUBKEY: ${MASTER_WALLET_PUBKEY:-}
+  TRADE_GRADUATED_ROUTE: ${TRADE_GRADUATED_ROUTE:-cpmm}
+
+# Harga SOL/USD mainnet (BUILD_PLAN §7n). Kosong = nilai SOL_PRICE_CONFIG; devnet tidak memakainya.
+x-sol-price-env: &sol-price-env
+  JUPITER_API_URL: ${JUPITER_API_URL:-https://lite-api.jup.ag}
+  SOL_PRICE_MAX_AGE_SECONDS: ${SOL_PRICE_MAX_AGE_SECONDS:-}
+  SOL_PRICE_MAX_DEVIATION_BPS: ${SOL_PRICE_MAX_DEVIATION_BPS:-}
+  SOL_PRICE_REFRESH_MS: ${SOL_PRICE_REFRESH_MS:-}
+
+x-worker-db: &worker-db
+  WORKER_DATABASE_URL: postgresql://liftoff_worker:${WORKER_DB_PASSWORD:?isi lewat generate-env.sh}@postgres:5432/liftoff
+  REDIS_URL: redis://:${REDIS_PASSWORD:?isi lewat generate-env.sh}@redis:6379
+
+services:
+  # ---------------------------------------------------------------- data
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    logging: *logging
+    environment:
+      POSTGRES_USER: liftoff
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?isi lewat generate-env.sh}
+      POSTGRES_DB: liftoff
+    volumes:
+      - db-data:/var/lib/postgresql/data
+    # Juga di jaringan signer supaya signer bisa ke database tanpa ikut jaringan data.
+    networks: [data, signer]
+    shm_size: 128mb
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U liftoff -d liftoff"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    deploy:
+      resources:
+        limits: { cpus: "1.0", memory: 1g }
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    logging: *logging
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?isi lewat generate-env.sh}
+    # noeviction: wajib untuk BullMQ (antrean launch tidak boleh dibuang diam-diam).
+    command:
+      - sh
+      - -c
+      - exec redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy noeviction --requirepass "$$REDIS_PASSWORD"
+    volumes:
+      - redis-data:/data
+    networks: [data]
+    healthcheck:
+      test: ["CMD-SHELL", 'REDISCLI_AUTH="$$REDIS_PASSWORD" redis-cli ping | grep -q PONG']
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    deploy:
+      resources:
+        limits: { cpus: "0.5", memory: 384m }
+
+  # Sekali jalan setiap deploy: migrasi skema (role PEMILIK) + aktifkan login role per aplikasi (F4).
+  migrate:
+    build: { context: .., dockerfile: packages/db/Dockerfile }
+    image: liftoff-migrate:${LIFTOFF_TAG:-latest}
+    restart: "no"
+    logging: *logging
+    environment:
+      DATABASE_URL: postgresql://liftoff:${POSTGRES_PASSWORD}@postgres:5432/liftoff
+      API_DATABASE_URL: postgresql://liftoff_api:${API_DB_PASSWORD:?isi lewat generate-env.sh}@postgres:5432/liftoff
+      WORKER_DATABASE_URL: postgresql://liftoff_worker:${WORKER_DB_PASSWORD}@postgres:5432/liftoff
+      SIGNER_DATABASE_URL: postgresql://liftoff_signer:${SIGNER_DB_PASSWORD:?isi lewat generate-env.sh}@postgres:5432/liftoff
+    networks: [data]
+    depends_on:
+      postgres: { condition: service_healthy }
+
+  # ---------------------------------------------------------------- signer (pemegang key master)
+  signer:
+    <<: *app
+    build: { context: .., dockerfile: apps/signer/Dockerfile }
+    image: liftoff-signer:${LIFTOFF_TAG:-latest}
+    environment:
+      <<: *solana-env
+      SIGNER_DATABASE_URL: postgresql://liftoff_signer:${SIGNER_DB_PASSWORD}@postgres:5432/liftoff
+      SIGNER_HOST: 0.0.0.0
+      SIGNER_PORT: "4100"
+      SIGNER_KEYPAIR_PATH: /run/secrets/master-keypair.json
+      # F12: token per worker (cakupan berbeda). Token lama SIGNER_AUTH_TOKEN sengaja tidak dipakai.
+      SIGNER_LAUNCH_TOKEN: ${SIGNER_LAUNCH_TOKEN:?isi lewat generate-env.sh}
+      SIGNER_ECONOMIC_TOKEN: ${SIGNER_ECONOMIC_TOKEN:?isi lewat generate-env.sh}
+      SIGNER_PAUSED: ${SIGNER_PAUSED:-0}
+      SIGNER_MAX_LAMPORTS_PER_TX: ${SIGNER_MAX_LAMPORTS_PER_TX:-}
+      SIGNER_MAX_LAMPORTS_PER_24H: ${SIGNER_MAX_LAMPORTS_PER_24H:-}
+      SIGNER_MAX_TX_PER_24H: ${SIGNER_MAX_TX_PER_24H:-}
+      SIGNER_MAX_LAMPORTS_PER_ECONOMIC_TX: ${SIGNER_MAX_LAMPORTS_PER_ECONOMIC_TX:-}
+      SIGNER_MAX_BUYBACK_SLIPPAGE_BPS: ${SIGNER_MAX_BUYBACK_SLIPPAGE_BPS:-}
+      SIGNER_MAX_RESERVE_SLIPPAGE_BPS: ${SIGNER_MAX_RESERVE_SLIPPAGE_BPS:-}
+      SIGNER_MAX_ASSET_OUTFLOW_PER_24H: ${SIGNER_MAX_ASSET_OUTFLOW_PER_24H:-}
+      SIGNER_CROSSCHECK_MIN_RAW: ${SIGNER_CROSSCHECK_MIN_RAW:-}
+      SIGNER_CROSSCHECK_TOLERANCE_BPS: ${SIGNER_CROSSCHECK_TOLERANCE_BPS:-}
+      JITO_TIP_LAMPORTS: ${JITO_TIP_LAMPORTS:-}
+    volumes:
+      # Keypair master dari host, DI LUAR repo, read-only. Tidak pernah masuk image.
+      - ${SIGNER_KEYPAIR_HOST_PATH:?path file keypair master di host}:/run/secrets/master-keypair.json:ro
+    # Tanpa "ports": signer tidak bisa diakses dari host maupun internet.
+    # Hanya jaringan "signer" (api, worker launch/economic/monitor, postgres) + jalur internet
+    # sendiri untuk RPC. Tidak di "data"/"egress", jadi indexer & backup tidak bisa menjangkaunya.
+    networks: [signer, signer-egress]
+    depends_on:
+      postgres: { condition: service_healthy }
+      migrate: { condition: service_completed_successfully }
+    deploy:
+      resources:
+        limits: { cpus: "0.5", memory: 384m }
+
+  # ---------------------------------------------------------------- publik (lewat Caddy)
+  api:
+    <<: *app
+    build: { context: .., dockerfile: apps/api/Dockerfile }
+    image: liftoff-api:${LIFTOFF_TAG:-latest}
+    environment:
+      <<: [*solana-env, *sol-price-env]
+      API_DATABASE_URL: postgresql://liftoff_api:${API_DB_PASSWORD}@postgres:5432/liftoff
+      REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379
+      API_HOST: 0.0.0.0
+      API_PORT: "4000"
+      WEB_ORIGIN: https://${DOMAIN:?domain publik}
+      PUBLIC_API_URL: https://${DOMAIN}
+      SESSION_SECRET: ${SESSION_SECRET:?isi lewat generate-env.sh}
+      # Caddy menimpa X-Forwarded-For dengan satu IP klien asli ({client_ip}); API hanya memercayai
+      # header itu dari peer jaringan privat (Caddy), lihat apps/api/src/config.ts.
+      TRUST_PROXY: "1"
+      UPLOAD_DIR: /data/uploads
+      # Hanya untuk cek /health (tanpa token: API tidak bisa meminta tanda tangan).
+      SIGNER_URL: http://signer:4100
+      X_CLIENT_ID: ${X_CLIENT_ID:-}
+      X_CLIENT_SECRET: ${X_CLIENT_SECRET:-}
+      X_CALLBACK_URL: https://${DOMAIN}/api/auth/x/callback
+      DEV_X_LINK: "0"
+      ADMIN_WALLETS: ${ADMIN_WALLETS:-}
+      TRADE_REFERRAL_WALLET: ${TRADE_REFERRAL_WALLET:-}
+      LAUNCH_DEPOSIT_ENABLED: ${LAUNCH_DEPOSIT_ENABLED:-1}
+      LAUNCH_DEPOSIT_LAMPORTS: ${LAUNCH_DEPOSIT_LAMPORTS:-}
+      LAUNCH_LIMIT_GLOBAL_PER_DAY: ${LAUNCH_LIMIT_GLOBAL_PER_DAY:-}
+      LAUNCH_LIMIT_PER_WALLET_PER_24H: ${LAUNCH_LIMIT_PER_WALLET_PER_24H:-}
+      LAUNCH_LIMIT_PER_WALLET_WITH_X_PER_24H: ${LAUNCH_LIMIT_PER_WALLET_WITH_X_PER_24H:-}
+      WALLET_MIN_BALANCE_LAMPORTS: ${WALLET_MIN_BALANCE_LAMPORTS:-}
+      WALLET_MIN_AGE_DAYS: ${WALLET_MIN_AGE_DAYS:-}
+      EXTERNAL_TICKER_MIN_LIQUIDITY_USD: ${EXTERNAL_TICKER_MIN_LIQUIDITY_USD:-}
+      EXTERNAL_TICKER_TIMEOUT_MS: ${EXTERNAL_TICKER_TIMEOUT_MS:-}
+      EXTERNAL_TICKER_UNAVAILABLE_POLICY: ${EXTERNAL_TICKER_UNAVAILABLE_POLICY:-reject}
+      IMAGE_HASH_MAX_DISTANCE: ${IMAGE_HASH_MAX_DISTANCE:-}
+      ANTI_COPYCAT_HIGH_RISK_SCORE: ${ANTI_COPYCAT_HIGH_RISK_SCORE:-}
+    volumes:
+      - uploads:/data/uploads
+    networks: [edge, data, signer]
+    depends_on:
+      redis: { condition: service_healthy }
+      migrate: { condition: service_completed_successfully }
+    deploy:
+      resources:
+        limits: { cpus: "1.0", memory: 768m }
+
+  web:
+    <<: *app
+    build:
+      context: ..
+      dockerfile: apps/web/Dockerfile
+      args:
+        API_INTERNAL_URL: http://api:4000
+        NEXT_PUBLIC_SOLANA_CLUSTER: ${SOLANA_CLUSTER:-devnet}
+        # Terlihat publik di browser: JANGAN isi URL dengan API key rahasia.
+        NEXT_PUBLIC_RPC_URL: ${NEXT_PUBLIC_RPC_URL:-}
+    image: liftoff-web:${LIFTOFF_TAG:-latest}
+    environment:
+      API_INTERNAL_URL: http://api:4000
+    tmpfs:
+      - /tmp
+      - /app/apps/web/.next/cache:uid=1000,gid=1000
+    networks: [edge]
+    depends_on:
+      api: { condition: service_started }
+    deploy:
+      resources:
+        limits: { cpus: "1.0", memory: 768m }
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    logging: *logging
+    environment:
+      DOMAIN: ${DOMAIN}
+      ACME_EMAIL: ${ACME_EMAIL:?email untuk sertifikat HTTPS}
+      # direct (default) | cloudflare — lihat caddy/Caddyfile dan docs/DEPLOY.md §Cloudflare.
+      EDGE_MODE: ${EDGE_MODE:-direct}
+      # Pindah domain: on + nama domain lama (caddy/edge/legacy-on.caddy).
+      LEGACY_MODE: ${LEGACY_MODE:-off}
+      LEGACY_DOMAIN: ${LEGACY_DOMAIN:-}
+    ports:
+      - "${HTTP_PORT:-80}:80"
+      - "${HTTPS_PORT:-443}:443"
+      - "${HTTPS_PORT:-443}:443/udp"
+    volumes:
+      # Seluruh folder caddy/ (Caddyfile + edge/*.caddy untuk EDGE_MODE).
+      - ./caddy:/etc/caddy:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    networks: [edge]
+    depends_on:
+      web: { condition: service_started }
+      api: { condition: service_started }
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:2019/config/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    deploy:
+      resources:
+        limits: { cpus: "0.5", memory: 256m }
+
+  # ---------------------------------------------------------------- worker (tanpa key)
+  worker-launch:
+    <<: *app
+    build: { context: .., dockerfile: apps/worker/Dockerfile }
+    image: liftoff-worker:${LIFTOFF_TAG:-latest}
+    command: ["node", "dist/index.js"]
+    environment:
+      <<: [*solana-env, *worker-db]
+      SIGNER_URL: http://signer:4100
+      SIGNER_LAUNCH_TOKEN: ${SIGNER_LAUNCH_TOKEN}
+      PUBLIC_API_URL: https://${DOMAIN}
+      LAUNCH_SEND_MODE: ${LAUNCH_SEND_MODE:-rpc}
+      LAUNCH_MAX_SUBMISSIONS: ${LAUNCH_MAX_SUBMISSIONS:-}
+      LAUNCH_WORKER_CONCURRENCY: ${LAUNCH_WORKER_CONCURRENCY:-}
+      LAUNCH_DEVNET_FUND_RAISING_RAW: ${LAUNCH_DEVNET_FUND_RAISING_RAW:-}
+      JITO_BLOCK_ENGINE_URL: ${JITO_BLOCK_ENGINE_URL:-}
+      JITO_TIP_LAMPORTS: ${JITO_TIP_LAMPORTS:-}
+    networks: [data, signer, egress]
+    depends_on:
+      redis: { condition: service_healthy }
+      signer: { condition: service_healthy }
+    deploy:
+      resources:
+        limits: { cpus: "0.5", memory: 512m }
+
+  worker-indexer:
+    <<: *app
+    image: liftoff-worker:${LIFTOFF_TAG:-latest}
+    command: ["node", "dist/indexer-main.js"]
+    environment:
+      <<: [*solana-env, *worker-db]
+      # RPC khusus indexer (boleh memuat API key; tidak pernah di-log). Kosong = RPC_URL.
+      INDEXER_RPC_URL: ${INDEXER_RPC_URL:-}
+      INDEXER_POLL_INTERVAL_MS: ${INDEXER_POLL_INTERVAL_MS:-}
+      INDEXER_HOLDERS_REFRESH_MS: ${INDEXER_HOLDERS_REFRESH_MS:-}
+      INDEXER_RPC_MIN_INTERVAL_MS: ${INDEXER_RPC_MIN_INTERVAL_MS:-}
+      INDEXER_MAX_TX_PER_CYCLE: ${INDEXER_MAX_TX_PER_CYCLE:-}
+    networks: [data, egress]
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+    deploy:
+      resources:
+        limits: { cpus: "0.5", memory: 512m }
+
+  # Fee claim + buyback/burn + Conviction Reserve (satu proses: siklus berurutan, lease per worker).
+  worker-economic:
+    <<: *app
+    image: liftoff-worker:${LIFTOFF_TAG:-latest}
+    command: ["node", "dist/economic-main.js"]
+    environment:
+      <<: [*solana-env, *worker-db, *sol-price-env]
+      SIGNER_URL: http://signer:4100
+      SIGNER_ECONOMIC_TOKEN: ${SIGNER_ECONOMIC_TOKEN}
+      FEE_INTAKE: ${FEE_INTAKE:-}
+      STONKFUN_FORWARDERS: ${STONKFUN_FORWARDERS:-}
+      FEE_SPENDING_ENABLED: ${FEE_SPENDING_ENABLED:-}
+      FEE_CLAIM_INTERVAL_MS: ${FEE_CLAIM_INTERVAL_MS:-}
+      BUYBACK_INTERVAL_MS: ${BUYBACK_INTERVAL_MS:-}
+      RESERVE_INTERVAL_MS: ${RESERVE_INTERVAL_MS:-}
+    networks: [data, signer, egress]
+    depends_on:
+      signer: { condition: service_healthy }
+    deploy:
+      resources:
+        limits: { cpus: "0.5", memory: 512m }
+
+  # Monitor & alert: tanpa key dan tanpa token signer (hanya GET /health).
+  worker-monitor:
+    <<: *app
+    image: liftoff-worker:${LIFTOFF_TAG:-latest}
+    command: ["node", "dist/monitor-main.js"]
+    environment:
+      <<: [*solana-env, *worker-db, *sol-price-env]
+      SIGNER_URL: http://signer:4100
+      MONITOR_INTERVAL_MS: ${MONITOR_INTERVAL_MS:-}
+      ALERT_REPEAT_MS: ${ALERT_REPEAT_MS:-}
+      ALERT_TELEGRAM_BOT_TOKEN: ${ALERT_TELEGRAM_BOT_TOKEN:-}
+      ALERT_TELEGRAM_CHAT_ID: ${ALERT_TELEGRAM_CHAT_ID:-}
+      ALERT_WEBHOOK_URL: ${ALERT_WEBHOOK_URL:-}
+    networks: [data, signer, egress]
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+    deploy:
+      resources:
+        limits: { cpus: "0.25", memory: 256m }
+
+  # ---------------------------------------------------------------- pemeriksaan (sekali jalan)
+  # Cek siap-nyala mainnet: `sh scripts/deploy.sh --preflight`. HANYA MEMBACA: tidak menandatangani
+  # dan tidak mengirim transaksi. Tidak ikut `up` (profile). Keypair hanya untuk mencocokkan alamat.
+  preflight:
+    profiles: [preflight]
+    build: { context: .., dockerfile: apps/signer/Dockerfile, target: build }
+    image: liftoff-preflight:${LIFTOFF_TAG:-latest}
+    restart: "no"
+    init: true
+    logging: *logging
+    user: "1000:1000"
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    working_dir: /repo/scripts/poc
+    entrypoint: ["/repo/node_modules/.bin/tsx", "16-mainnet-preflight.ts"]
+    environment:
+      <<: [*solana-env, *sol-price-env]
+      HOME: /tmp
+      SIGNER_KEYPAIR_PATH: /run/secrets/master-keypair.json
+      LOCAL_EDGE_DIR: /etc/caddy-edge
+      DOMAIN: ${DOMAIN}
+      EDGE_MODE: ${EDGE_MODE:-direct}
+      NEXT_PUBLIC_RPC_URL: ${NEXT_PUBLIC_RPC_URL:-}
+      LAUNCH_SEND_MODE: ${LAUNCH_SEND_MODE:-rpc}
+      JITO_BLOCK_ENGINE_URL: ${JITO_BLOCK_ENGINE_URL:-}
+      FEE_INTAKE: ${FEE_INTAKE:-}
+      LAUNCH_DEVNET_FUND_RAISING_RAW: ${LAUNCH_DEVNET_FUND_RAISING_RAW:-}
+      SIGNER_PAUSED: ${SIGNER_PAUSED:-0}
+      ALERT_TELEGRAM_BOT_TOKEN: ${ALERT_TELEGRAM_BOT_TOKEN:-}
+      ALERT_TELEGRAM_CHAT_ID: ${ALERT_TELEGRAM_CHAT_ID:-}
+      ALERTS_WAIVED: ${ALERTS_WAIVED:-}
+    volumes:
+      - ${SIGNER_KEYPAIR_HOST_PATH:?path file keypair master di host}:/run/secrets/master-keypair.json:ro
+      - ./caddy/edge:/etc/caddy-edge:ro
+    networks: [egress]
+
+  # ---------------------------------------------------------------- backup
+  # pg_dump harian + arsip upload, disimpan BACKUP_RETENTION_DAYS hari di BACKUP_HOST_DIR (host).
+  # Salin folder itu ke luar server secara berkala (docs/DEPLOY.md §Backup).
+  backup:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    logging: *logging
+    user: "70:70"
+    entrypoint: ["sh", "/scripts/backup.sh"]
+    environment:
+      PGHOST: postgres
+      PGUSER: liftoff
+      PGDATABASE: liftoff
+      PGPASSWORD: ${POSTGRES_PASSWORD}
+      BACKUP_INTERVAL_HOURS: ${BACKUP_INTERVAL_HOURS:-24}
+      BACKUP_RETENTION_DAYS: ${BACKUP_RETENTION_DAYS:-14}
+    volumes:
+      - ./backup/backup.sh:/scripts/backup.sh:ro
+      - uploads:/uploads:ro
+      - ${BACKUP_HOST_DIR:-/var/backups/liftoff}:/backups
+    networks: [data]
+    depends_on:
+      postgres: { condition: service_healthy }
+    deploy:
+      resources:
+        limits: { cpus: "0.5", memory: 256m }
+
+networks:
+  edge: {}
+  egress: {}
+  # Akses internet (RPC) khusus signer; tidak ada container lain di jaringan ini.
+  signer-egress: {}
+  data:
+    internal: true
+  signer:
+    internal: true
+
+volumes:
+  db-data:
+  redis-data:
+  uploads:
+  caddy-data:
+  caddy-config:

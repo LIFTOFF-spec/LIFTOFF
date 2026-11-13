@@ -1,0 +1,29 @@
+{
+  "name": "@liftoff/api",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/server.ts",
+    "build": "tsup",
+    "start": "node dist/server.js",
+    "lint": "eslint .",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@fastify/cookie": "11.1.5",
+    "@liftoff/db": "workspace:*",
+    "@liftoff/shared": "workspace:*",
+    "@liftoff/solana": "workspace:*",
+    "@prisma/adapter-pg": "7.10.1",
+    "@prisma/client": "7.10.1",
+    "@solana/web3.js": "1.98.4",
+    "bullmq": "6.3.11",
+    "fastify": "5.12.7",
+    "ioredis": "6.0.0",
+    "pg": "8.23.1",
+    "sharp": "0.35.5",
+    "zod": "4.6.7"
+  }
+}

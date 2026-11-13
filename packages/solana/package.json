@@ -1,0 +1,31 @@
+{
+  "name": "@liftoff/solana",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./launchlab": "./src/launchlab.ts",
+    "./trade": "./src/trade.ts",
+    "./stonkfun": "./src/stonkfun.ts",
+    "./market": "./src/market.ts",
+    "./receipt": "./src/receipt.ts",
+    "./economic": "./src/economic.ts",
+    "./reserve": "./src/reserve.ts",
+    "./token-program": "./src/token-program.ts"
+  },
+  "scripts": {
+    "lint": "eslint .",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@liftoff/shared": "workspace:*",
+    "@raydium-io/raydium-sdk-v2": "0.2.74-alpha",
+    "@solana/web3.js": "1.98.4",
+    "bn.js": "5.2.2"
+  },
+  "devDependencies": {
+    "@types/bn.js": "5.2.0"
+  }
+}

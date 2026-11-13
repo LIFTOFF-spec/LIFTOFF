@@ -1,0 +1,83 @@
+# CI LIFTOFF (Tahap 10b): lint, format, typecheck, test, dan build image Docker pada push/PR.
+# Tanpa secret dan tanpa deploy otomatis ke server (deploy manual: docs/DEPLOY.md).
+# Postgres/Redis hanya untuk test (kredensial lokal CI, bukan secret). Tidak ada akses RPC berbayar.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: liftoff
+          POSTGRES_PASSWORD: liftoff
+          POSTGRES_DB: liftoff
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U liftoff -d liftoff"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+      redis:
+        image: redis:7-alpine
+        ports: ["6379:6379"]
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      DATABASE_URL: postgresql://liftoff:liftoff@localhost:5432/liftoff
+      REDIS_URL: redis://localhost:6379
+      SOLANA_CLUSTER: devnet
+      TURBO_TELEMETRY_DISABLED: "1"
+      NEXT_TELEMETRY_DISABLED: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: pnpm (versi dari packageManager)
+        run: corepack enable
+      - name: Install
+        run: pnpm install --frozen-lockfile
+      - name: Migrasi database test
+        run: pnpm db:migrate
+      - run: pnpm format:check
+      - run: pnpm lint
+      - run: pnpm typecheck
+      - run: pnpm test
+
+  docker:
+    # Memastikan semua Dockerfile produksi tetap bisa di-build (image tidak di-push ke mana pun).
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: api, file: apps/api/Dockerfile }
+          - { name: signer, file: apps/signer/Dockerfile }
+          - { name: worker, file: apps/worker/Dockerfile }
+          - { name: web, file: apps/web/Dockerfile }
+          - { name: migrate, file: packages/db/Dockerfile }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Build ${{ matrix.name }}
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ${{ matrix.file }}
+          push: false
+          tags: liftoff-${{ matrix.name }}:ci
